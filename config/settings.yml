@@ -2,7 +2,7 @@
 # Replace every value marked CHANGE-ME before the first deployment.
 
 catalog: main                # CHANGE-ME: Unity Catalog catalog that holds the pipeline objects
-schema: libs                 # CHANGE-ME: schema for the two volumes and the registry tables
+schema: libs                 # CHANGE-ME: schema for the volumes and the registry tables
 staging_volume: staging      # candidates; workloads have no access
 wheelhouse_volume: wheelhouse  # approved releases; workloads read only
 
