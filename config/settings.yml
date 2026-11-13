@@ -1,0 +1,23 @@
+# Environment settings for the library distribution pipeline.
+# Replace every value marked CHANGE-ME before the first deployment.
+
+catalog: main                # CHANGE-ME: Unity Catalog catalog that holds the pipeline objects
+schema: libs                 # CHANGE-ME: schema for the two volumes and the registry tables
+staging_volume: staging      # candidates; workloads have no access
+wheelhouse_volume: wheelhouse  # approved releases; workloads read only
+
+jfrog:
+  platform_url: https://CHANGE-ME.jfrog.io   # JFrog Platform base URL, no trailing path
+  pypi_repo: CHANGE-ME-pypi-virtual          # repository the pipeline resolves from
+  curated_repo: CHANGE-ME-pypi-remote        # curated remote repository key (for waiver requests)
+  secret_scope: libdist                      # Databricks secret scope, readable by the builder only
+  secret_user_key: jfrog-user
+  secret_token_key: jfrog-token
+  cli_path: /Volumes/main/libs/tools/jf      # CHANGE-ME: where Ops placed the JFrog CLI binary
+  watches: []                                # Xray Watches for the policy-violation scan, e.g. [prod-python]
+  scan_threads: 4
+  releases_repo: ""                          # Artifactory repo that proxies releases.jfrog.io (for the CLI's Xray indexer); empty = direct download
+
+uv_path: uv            # uv is installed from JFrog at run time if it is not on the cluster
+uv_version: ""         # pin a version here once one is approved, e.g. "0.11.32"
+max_resolve_retries: 15

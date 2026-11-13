@@ -1,0 +1,22 @@
+# One channel = one group of libraries for one runtime.
+# The build job must run on the same runtime as the compute that uses the channel.
+
+runtime_profile: dbr-15.4-lts-classic   # label stored with each release; keep it in step with the job cluster
+owner: CHANGE-ME@example.com            # who is told about failures and new findings
+
+# Modules that are not meant to be imported directly (the import test skips them).
+skip_imports: []
+# Extra modules to import that the wheels do not declare.
+extra_imports: []
+# Optional team smoke tests: python files in this folder, run after the import test.
+smoke_tests: []
+
+# Waves are switched one at a time. policy_ids are compute policy IDs.
+# job_ids are only used by the health check (jobs that run on those policies).
+waves:
+  - name: canary
+    policy_ids: []      # CHANGE-ME: for example ["000F1A2B3C4D5E6F"]
+    job_ids: []
+  - name: main
+    policy_ids: []
+    job_ids: []

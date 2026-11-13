@@ -1,0 +1,45 @@
+# Databricks Asset Bundle for the library distribution pipeline.
+# Deploy with:  databricks bundle deploy -t <target>
+# See docs/DEPLOYMENT.md for the full procedure.
+
+bundle:
+  name: library-distribution
+
+include:
+  - resources/*.yml
+
+variables:
+  builder_sp:
+    description: Application ID of the builder service principal (resolves, scans, tests, reassesses)
+  promoter_sp:
+    description: Application ID of the promoter service principal (publishes and switches compute policies)
+  notification_email:
+    description: Address that receives job failure emails
+  spark_version:
+    description: Databricks Runtime of the build cluster. Must match the runtime of the channel's consumers.
+    default: 15.4.x-scala2.12
+  node_type_id:
+    description: Node type of the single-node pipeline cluster (cloud specific)
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://CHANGE-ME-dev.cloud.databricks.com
+    variables:
+      builder_sp: CHANGE-ME-builder-application-id
+      promoter_sp: CHANGE-ME-promoter-application-id
+      notification_email: CHANGE-ME@example.com
+      node_type_id: CHANGE-ME          # for example Standard_D4ds_v5 (Azure) or m5.xlarge (AWS)
+
+  prod:
+    mode: production
+    workspace:
+      host: https://CHANGE-ME-prod.cloud.databricks.com
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      builder_sp: CHANGE-ME-builder-application-id
+      promoter_sp: CHANGE-ME-promoter-application-id
+      notification_email: CHANGE-ME@example.com
+      node_type_id: CHANGE-ME

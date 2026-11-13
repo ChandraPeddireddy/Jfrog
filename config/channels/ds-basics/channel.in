@@ -1,0 +1,8 @@
+# Libraries this channel provides. One requirement per line.
+# Write a name or a range. Do not pin exact versions here: the pipeline pins
+# every library, including hidden dependencies, in requirements.lock.
+#
+# To add a library, add one line and open a pull request. The next build includes it.
+
+requests>=2,<3
+certifi

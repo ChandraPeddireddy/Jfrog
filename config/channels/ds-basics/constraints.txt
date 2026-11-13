@@ -1,0 +1,9 @@
+# Version limits that apply to every library in this channel, including hidden dependencies.
+#
+# Use this file to:
+#   - keep a library at the version the Databricks Runtime ships (for example numpy, pandas),
+#     so the release does not replace platform packages;
+#   - exclude a version by hand:  somepackage!=1.2.3
+#
+# The pipeline adds "name!=version" lines for versions that JFrog blocks, in its
+# own working copy. It does not edit this file.

@@ -1,0 +1,6 @@
+{
+  "name": "ds-basics-canary",
+  "description": "Pilot compute policy for the ds-basics channel. The 'libraries' entry is managed by the libdist-switch job; do not edit it by hand.",
+  "definition": "{\"spark_version\": {\"type\": \"fixed\", \"value\": \"15.4.x-scala2.12\"}, \"data_security_mode\": {\"type\": \"allowlist\", \"values\": [\"SINGLE_USER\", \"USER_ISOLATION\"], \"defaultValue\": \"SINGLE_USER\"}, \"custom_tags.library_channel\": {\"type\": \"fixed\", \"value\": \"ds-basics\"}}",
+  "libraries": []
+}

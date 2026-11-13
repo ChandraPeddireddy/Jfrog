@@ -1,0 +1,24 @@
+# Security rules, kept as code. Owner: Security. Change through a reviewed pull request.
+
+# A finding with one of these severities fails a candidate release.
+block_severities: [Critical, High]
+
+# Which severity Xray reports. Record the choice from decision D11 here
+# (for example "xray-cvss" or "jfrog-research"). It is stored with every finding.
+severity_source: xray
+
+# A failed or incomplete scan always holds a release. This flag only controls
+# whether a failed Watch (policy violation) scan also holds it.
+hold_on_scan_failure: true
+
+# Hours a published release may stay in use after a NEW blocking finding.
+# EXAMPLE VALUES. They are not approved. Security sets them in decision D1,
+# then sets grace_values_approved to true. Until then the reassess job logs a warning.
+# Rule: each value must be longer than the time it takes to get a replacement release.
+grace_values_approved: false
+grace_hours:
+  Critical: 24
+  High: 72
+  Medium: 168
+  Low: 720
+  Unknown: 24

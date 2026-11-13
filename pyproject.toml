@@ -1,0 +1,25 @@
+[project]
+name = "libdist"
+version = "0.1.0"
+description = "Secure Python library distribution for Databricks: build, scan, test and publish approved releases"
+requires-python = ">=3.10"
+# On Databricks these come with the runtime. They are listed for local development.
+dependencies = ["pyyaml", "requests", "databricks-sdk"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "uv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"examples/consumer_check.py" = ["E402"]  # a Databricks notebook: imports sit in their cells
