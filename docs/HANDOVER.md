@@ -6,7 +6,7 @@ What this package is, who needs which part, and what happens first.
 
 | Item | Where | For |
 |---|---|---|
-| The proposed solution (design, decisions, POC tests) | `docs/Library_Distribution_Proposed_Solution.docx` | Architecture, Security, Platform |
+| The proposed solution, version 2.1 (design, decisions, POC tests) | `docs/Library_Distribution_Proposed_Solution.docx` | Architecture, Security, Platform |
 | The implementation plan: 11 stages, checks, and the code change for each unexpected result | `docs/IMPLEMENTATION.md` | Ops |
 | Step-by-step commands for the first deployment | `docs/DEPLOYMENT.md` | Ops |
 | Day-to-day operation and what to do for each alert | `docs/RUNBOOK.md` | Ops, on-call |
@@ -62,19 +62,16 @@ Nothing in the repository can supply these. Ask for them first.
 Do not switch on any automation (`libdist-promote`, `rollout.auto`, `approval_mode`,
 `waiver_mode`) before stage 5 is complete.
 
-## Where the code differs from the proposed solution document
+## The proposed solution document and the code
 
-The design is the same. A few details changed while it was built.
+`docs/Library_Distribution_Proposed_Solution.docx` is version 2.1. It was updated after the code
+was written, so the two agree on release names, release states, registry tables, the serverless
+install path and the discovery step. Section 16 of the document describes this package: its
+parts, the automation switches with the decision each one belongs to, and how the three phases
+map to the eleven stages of the implementation guide.
 
-| Topic | Proposed solution document | Code |
-|---|---|---|
-| Release names | `ds-basics-2026-11-12` | `ds-basics-20261112-1405` (date and time, UTC), so two builds on one day do not clash |
-| Release states | REQUESTED to APPROVED, plus REVOKED and others | Adds `PUBLISHED`: approved **and** copied to the wheelhouse with every hash verified |
-| Registry tables | Six `dependency_*` tables | Nine: adds `dependency_references` (which compute points at which release), `dependency_rollouts`, `dependency_migration` |
-| Serverless | The base environment points at the release's `install.txt` | The pip options are written into the environment YAML directly, which is the documented form |
-| Volume layout | One `libs` schema | Catalog and schema are settings; three volumes: `staging`, `wheelhouse`, `tools` |
-| Canary health check | Part of the pipeline | Built, but off until `rollout.auto` is switched on; before that Ops runs query H1 |
-| Discover step | First stage of every build | A separate daily job; channels are defined in `channel.in` files, and discovery informs them |
+If the document and the code ever disagree, the code and `docs/STATUS.md` describe what exists.
+Update the document when a decision or a POC result changes the design.
 
 ## Who to ask
 
