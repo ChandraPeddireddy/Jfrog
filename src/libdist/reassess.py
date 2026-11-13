@@ -2,12 +2,16 @@
 
 For each new blocking finding this job:
   1. records the finding,
-  2. opens a GRACE exception with a deadline taken from policy.yml,
-  3. optionally starts a replacement build that upgrades only the affected package.
+  2. opens a GRACE exception with a deadline taken from policy.yml.
 
-When a deadline passes, the exception is marked EXPIRED and an event is
-written. The job never revokes a release by itself; that is a Security
-decision (D7) and a runbook step.
+Then, for every release in use that has an active grace period and no
+replacement on the way, it starts a replacement build that upgrades only the
+affected packages. It tries again on every run, so a build that failed because
+a fix was still inside the Curation window succeeds once the fix is allowed or
+a waiver is approved.
+
+When a deadline passes, the exception is marked EXPIRED. The release is revoked
+only if policy.yml says ``on_grace_expiry: revoke`` (decision D7).
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from typing import Callable
 
 from . import registry as reg
 from .build import _finding_row
-from .promote import _as_datetime
+from .promote import _as_datetime, revoke
 from .scan import SCANNED
 from .settings import Config
 from .util import log, utcnow
@@ -78,11 +82,9 @@ def reassess(cfg: Config, registry: reg.Registry, scanner, now: datetime | None 
         if new_rows:
             registry.add_findings(new_rows)
         summary["releases"][release_id] = {"new_findings": len(new_rows), "affected": sorted(affected)}
-        if affected:
-            summary["rebuilds"].setdefault(row["channel"], set()).update(affected)
 
     for exc in registry.list_exceptions():
-        if exc.get("status") not in ("OPEN", "APPROVED"):
+        if exc.get("status") not in ("OPEN", "APPROVED") or exc.get("kind") != "GRACE":
             continue
         deadline = _as_datetime(exc.get("deadline_at"))
         if deadline and deadline.timestamp() < now.timestamp():
@@ -91,6 +93,22 @@ def reassess(cfg: Config, registry: reg.Registry, scanner, now: datetime | None 
                                {"issue_id": exc.get("issue_id"), "severity": exc.get("severity"),
                                 "deadline": str(exc.get("deadline_at"))})
             summary["expired"].append(exc["exception_id"])
+            release = registry.get_release(exc.get("release_id") or "")
+            if policy.on_grace_expiry == "revoke" and release and release["status"] == reg.PUBLISHED:
+                revoke(registry, release["release_id"],
+                       f"grace period for {exc.get('issue_id')} ({exc.get('severity')}) ended")
+                summary.setdefault("revoked", []).append(release["release_id"])
+
+    # Replacement builds: every release in use with an active grace period and nothing on the way.
+    in_use = set(registry.releases_in_use())
+    for exc in registry.list_exceptions():
+        if exc.get("kind") != "GRACE" or exc.get("status") not in ("OPEN", "APPROVED", "EXPIRED"):
+            continue
+        if exc.get("release_id") not in in_use or not exc.get("package"):
+            continue
+        if _replacement_on_the_way(registry, exc["channel"], exc["release_id"], now):
+            continue
+        summary["rebuilds"].setdefault(exc["channel"], set()).add(exc["package"])
 
     summary["rebuilds"] = {c: sorted(p) for c, p in summary["rebuilds"].items()}
     registry.add_event("RESCAN_COMPLETED", "", "", {
@@ -100,3 +118,27 @@ def reassess(cfg: Config, registry: reg.Registry, scanner, now: datetime | None 
         for channel, packages in summary["rebuilds"].items():
             trigger_rebuild(channel, packages)
     return summary
+
+
+_BUILDING = (reg.DOWNLOADING, reg.SCANNING, reg.TESTING)
+_WAITING = (reg.READY_FOR_APPROVAL, reg.APPROVED, reg.PUBLISHED)
+
+
+def _replacement_on_the_way(registry: reg.Registry, channel: str, release_id: str, now: datetime,
+                            stale_hours: float = 6) -> bool:
+    """True when a newer release of the channel is being built, awaits approval, or is published."""
+    current = registry.get_release(release_id) or {}
+    for other in registry.list_releases(channel):
+        if other["release_id"] == release_id or str(other.get("created_at")) <= str(current.get("created_at")):
+            continue
+        if other["status"] in _WAITING:
+            rolled_back = any(r["release_id"] == other["release_id"] and r["status"] == "ROLLED_BACK"
+                              for r in registry.list_rollouts(channel))
+            if not rolled_back:
+                return True
+            continue
+        created = _as_datetime(other.get("created_at"))
+        if other["status"] in _BUILDING and created and \
+                (now.timestamp() - created.timestamp()) < stale_hours * 3600:
+            return True
+    return False

@@ -15,6 +15,9 @@ variables:
     description: Application ID of the promoter service principal (publishes and switches compute policies)
   notification_email:
     description: Address that receives job failure emails
+  config_dir:
+    description: Configuration folder for this target. Use a separate folder per workspace when policy IDs differ.
+    default: config
   spark_version:
     description: Databricks Runtime of the build cluster. Must match the runtime of the channel's consumers.
     default: 15.4.x-scala2.12

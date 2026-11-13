@@ -80,7 +80,7 @@ class FakePolicies:
         return dict(self.policies[policy_id])
 
     def set_libraries(self, policy, libraries):
-        self.policies[policy["policy_id"]]["libraries"] = libraries
+        self.policies[policy["policy_id"]] = {**policy, "libraries": libraries}
         self.edits.append((policy["policy_id"], libraries))
 
 

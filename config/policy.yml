@@ -22,3 +22,27 @@ grace_hours:
   Medium: 168
   Low: 720
   Unknown: 24
+
+# ---- Automation switches. All are off by default: phase 1 behaviour. -------------------
+
+# Who approves a candidate that passed the gate and the tests (decision D2).
+#   manual             a security approver runs sql/approve_release.sql for every release
+#   security_rebuilds  releases built to replace a vulnerable library are approved by these rules;
+#                      new libraries and routine refreshes still need a person
+#   automatic          every passing candidate is approved by these rules
+approval_mode: manual
+
+# When a fix version is blocked only because it is too new (decision D10).
+#   off      do nothing; Ops requests the waiver by hand
+#   request  the build asks JFrog Curation for a waiver for that exact version
+waiver_mode: "off"
+
+# When a grace deadline passes without a replacement (decision D7).
+#   alert   record it and alert; Security decides
+#   revoke  also mark the release REVOKED. New compute starts keep working only after
+#           compute is switched to an eligible release.
+on_grace_expiry: alert
+
+# Clean-up (decision D9). Days an unused release stays after compute left it.
+retention_days: 7
+staging_retention_days: 30

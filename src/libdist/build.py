@@ -15,7 +15,7 @@ from .resolve import Blocked, IndexAccess, NoSafeVersion, ResolveError, resolve
 from .scan import SCANNED
 from .settings import Config
 from .tester import run_test
-from .util import log, new_release_id, sha256_file, utcnow
+from .util import copy_tree, log, new_release_id, sha256_file, utcnow
 
 
 def _previous_release(registry: reg.Registry, channel: str) -> dict | None:
@@ -45,6 +45,7 @@ def build_release(
     classify: Callable[[Blocked], str] | None = None,
     release_id: str | None = None,
     work_root: str | None = None,
+    request_waiver: Callable[[str, str, str], dict] | None = None,
 ) -> dict:
     """Returns a summary dict. ``summary["status"]`` is the release status."""
     settings = cfg.settings
@@ -67,6 +68,9 @@ def build_release(
     summary: dict = {"release_id": release_id, "channel": channel.name}
 
     def finish(status: str, reason: str = "", **extra) -> dict:
+        if status != reg.READY_FOR_APPROVAL and request_waiver and cfg.policy.waiver_mode == "request":
+            summary["waivers"] = _request_waivers(registry, channel.name, release_id, upgrade_packages,
+                                                  summary.get("blocked", []), request_waiver)
         registry.update_release(release_id, status=status, status_reason=reason[:2000], **extra)
         registry.add_event(f"BUILD_{status}", release_id, channel.name, {"reason": reason[:2000]})
         summary.update(status=status, reason=reason)
@@ -123,7 +127,8 @@ def build_release(
                                              cfg.policy.severity_source, "build"))
         if finding_rows:
             registry.add_findings(finding_rows)
-        decision = gate.evaluate(resolved.pins, scans, violations, cfg.policy)
+        decision = gate.evaluate(resolved.pins, scans, violations, cfg.policy,
+                                 accepted_issue_ids=_accepted_issues(registry, channel.name))
         registry.update_release(release_id, gate_status=decision.status)
 
         # 4. Test (only if the gate passed) -------------------------------------
@@ -160,7 +165,7 @@ def build_release(
         (work / "test-results.json").write_text(json.dumps(report.to_dict() if report else
                                                            {"passed": False, "skipped": "gate did not pass"}, indent=2))
         staging.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(work, staging, dirs_exist_ok=True)
+        copy_tree(work, staging)
         lock_sha = sha256_file(staging / "requirements.lock")
         summary.update(staging_path=str(staging), gate=decision.status, packages=len(resolved.pins),
                        changes=diff.to_dict() if diff else None)
@@ -177,6 +182,12 @@ def build_release(
             return finish(reg.FAILED, reason, lock_sha256=lock_sha)
         unscanned = [a["filename"] for a in artifacts if a["scan_status"] != SCANNED]
         assert not unscanned, "the gate must hold unscanned wheels"
+        # A waiver that was pending for a version now in the lock has done its job.
+        pinned = {(p.key, p.version) for p in resolved.pins}
+        for exc in registry.list_exceptions(status="OPEN"):
+            if exc.get("kind") == "WAIVER" and exc.get("channel") == channel.name and \
+                    (exc.get("package"), exc.get("version")) in pinned:
+                registry.update_exception(exc["exception_id"], status="CLOSED", closed_at=utcnow())
         return finish(reg.READY_FOR_APPROVAL, "", lock_sha256=lock_sha)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -190,3 +201,63 @@ def _finding_row(release_id, package, version, filename, finding, severity_sourc
         "component": f"{finding.component}:{finding.component_version}".strip(":"),
         "is_violation": finding.is_violation, "summary": finding.summary, "source": source,
     }
+
+
+def _accepted_issues(registry: reg.Registry, channel: str) -> set[str]:
+    """Findings Security accepted for this channel (APPROVED exception, deadline not passed)."""
+    now, accepted = utcnow().timestamp(), set()
+    for exc in registry.list_exceptions(status="APPROVED"):
+        deadline = exc.get("deadline_at")
+        if isinstance(deadline, str):
+            from datetime import datetime
+
+            deadline = datetime.fromisoformat(deadline)
+        if exc.get("channel") == channel and exc.get("issue_id") and (not deadline or deadline.timestamp() > now):
+            accepted.add(exc["issue_id"])
+    return accepted
+
+
+def _version_key(version: str):
+    try:
+        from packaging.version import Version
+
+        return (1, Version(version))
+    except Exception:
+        return (0, version)
+
+
+def _request_waivers(registry: reg.Registry, channel: str, release_id: str, upgrade_packages: list[str],
+                     blocked: list[dict], request_waiver: Callable[[str, str, str], dict]) -> list[dict]:
+    """Outcome B: a fix exists but Curation holds it. Ask for a waiver for that exact version.
+
+    Only for packages this build was asked to upgrade (a security rebuild), only for
+    versions that Curation blocked, and only once per package version.
+    """
+    from .lockfile import normalize_name
+
+    wanted = {normalize_name(p) for p in upgrade_packages}
+    newest: dict[str, str] = {}
+    for item in blocked:
+        if item.get("reason") != "curation" or not item.get("version") or item.get("name") not in wanted:
+            continue
+        if item["name"] not in newest or _version_key(item["version"]) > _version_key(newest[item["name"]]):
+            newest[item["name"]] = item["version"]
+    already = {(e.get("package"), e.get("version")) for e in registry.list_exceptions() if e.get("kind") == "WAIVER"}
+    requested = []
+    for package, version in sorted(newest.items()):
+        if (package, version) in already:
+            continue
+        reason = (f"Fix version needed to replace a library with a known vulnerability in a release "
+                  f"that is in use (channel {channel}). Requested by the library distribution pipeline.")
+        try:
+            response = request_waiver(package, version, reason)
+        except Exception as exc:
+            registry.add_event("WAIVER_FAILED", release_id, channel,
+                               {"package": package, "version": version, "error": str(exc)[:1000]})
+            continue
+        registry.add_exception({"release_id": release_id, "channel": channel, "package": package,
+                                "version": version, "issue_id": "", "kind": "WAIVER", "rationale": reason})
+        registry.add_event("WAIVER_REQUESTED", release_id, channel,
+                           {"package": package, "version": version, "response": response})
+        requested.append({"package": package, "version": version})
+    return requested

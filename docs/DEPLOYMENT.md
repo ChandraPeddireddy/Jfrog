@@ -1,13 +1,15 @@
 # Deployment guide
 
-This guide takes an Ops engineer from an empty workspace to a first release installed on a
-pilot cluster. It covers **phase 1**: one application, one runtime, classic compute, manual approval.
+This guide has the commands for the **first deployment**: from an empty workspace to a first
+release installed on a pilot cluster, with manual approval. It is stages 2 to 4 of
+[IMPLEMENTATION.md](IMPLEMENTATION.md), which is the master plan and also tells you what to change
+in the code when a step behaves differently from what is described here.
 
 Do the steps in order. Each step ends with a check. Use a **non-production workspace** first.
 
 > The code has not been run against a real workspace or a real JFrog instance yet
-> (see [STATUS.md](STATUS.md)). Expect to adjust details during the first deployment, and
-> record what you change.
+> (see [STATUS.md](STATUS.md)). Expect to adjust details during the first deployment. When a
+> step fails, look up the stage in IMPLEMENTATION.md before changing anything.
 
 ## What you need before you start
 
@@ -59,8 +61,9 @@ Note the `applicationId` of each. Then:
 1. Give the person who deploys the bundle the **Service Principal User** role on both.
 2. Give both service principals the **Allow unrestricted cluster creation** entitlement, or a
    compute policy they may use for the single-node pipeline cluster.
-3. Make `libdist-promoter` a **workspace admin**. Editing a compute policy's libraries is an
-   admin action. This is a high privilege: Security should review it (see [STATUS.md](STATUS.md)).
+3. Make `libdist-promoter` a **workspace admin**. Editing compute policies and managing
+   serverless base environments are admin actions. This is a high privilege: Security should
+   review it (see [STATUS.md](STATUS.md)).
 
 **Check:** `databricks service-principals list` shows both.
 
@@ -138,10 +141,10 @@ databricks bundle validate -t dev
 databricks bundle deploy -t dev
 ```
 
-This uploads the code and creates seven jobs (see the README). The two scheduled jobs are created paused.
+This uploads the code and creates nine jobs (see the README). The four scheduled jobs are created paused.
 
-**Check:** the Jobs page lists `libdist-build`, `libdist-publish`, `libdist-switch`,
-`libdist-rollback`, `libdist-revoke`, `libdist-reassess` and `libdist-discover`. In `dev` mode the
+**Check:** the Jobs page lists `libdist-build`, `libdist-reassess`, `libdist-discover`,
+`libdist-promote`, `libdist-publish`, `libdist-switch`, `libdist-rollback`, `libdist-revoke` and `libdist-cleanup`. In `dev` mode the
 names carry a `[dev <your name>]` prefix.
 
 ## Step 7. Create the registry tables
@@ -149,7 +152,9 @@ names carry a `[dev <your name>]` prefix.
 1. Open `sql/02_registry_tables.sql`, replace `${catalog}` and `${schema}`, and run it.
 2. Open `sql/03_registry_grants.sql`, replace the placeholders, and run it.
 
-**Check:** `SHOW TABLES IN <catalog>.<schema>` lists seven `dependency_*` tables.
+3. Optional, for jobs that need a hard stop at start: run `sql/04_eligible_releases_view.sql`.
+
+**Check:** `SHOW TABLES IN <catalog>.<schema>` lists nine `dependency_*` tables.
 
 ## Step 8. Build, approve and publish the first release
 
@@ -253,6 +258,19 @@ Do this only when the pilot jobs no longer install anything from JFrog at run ti
 This is POC test P7. The pipeline cluster must keep its route to JFrog.
 
 ---
+
+## What comes next
+
+You now have the phase 1 pilot. Continue with [IMPLEMENTATION.md](IMPLEMENTATION.md):
+
+| Stage | Adds |
+|---|---|
+| 5 | Rollback and revocation exercise |
+| 6 | `libdist-promote`: automatic publish, rollouts with a health check, approval by rules |
+| 7 | Curation waiver requests for fix versions |
+| 8 | Serverless compute |
+| 9 | Moving existing notebooks and jobs; blocking run-time installs |
+| 10 | More channels, workspaces and metastores; clean-up |
 
 ## Deploying to production
 

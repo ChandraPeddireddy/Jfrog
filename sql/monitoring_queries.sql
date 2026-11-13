@@ -27,7 +27,7 @@ WHERE (status = 'OPEN' AND deadline_at <= current_timestamp() + INTERVAL 3 DAYS)
 ORDER BY deadline_at;
 
 -- A4. Compute still points at a release that is revoked
-SELECT r.channel, r.wave, r.reference_type, r.reference_id, r.release_id, rel.revoked_at, rel.status_reason
+SELECT r.site, r.channel, r.wave, r.reference_type, r.reference_id, r.release_id, rel.revoked_at, rel.status_reason
 FROM ${catalog}.${schema}.dependency_references r
 JOIN ${catalog}.${schema}.dependency_releases rel USING (release_id)
 WHERE rel.status = 'REVOKED';
@@ -50,6 +50,26 @@ FROM ${catalog}.${schema}.dependency_events
 WHERE action = 'RESCAN_COMPLETED'
 HAVING MAX(event_time) IS NULL OR MAX(event_time) < current_timestamp() - INTERVAL 8 HOURS;
 
+-- A8. A rollout was rolled back, halted, or is held waiting for runs
+SELECT rollout_id, site, channel, release_id, status, wave_name, wave_switched_at, detail
+FROM ${catalog}.${schema}.dependency_rollouts
+WHERE status IN ('ROLLED_BACK', 'HALTED') AND updated_at >= current_timestamp() - INTERVAL 24 HOURS
+   OR (status = 'IN_PROGRESS' AND detail LIKE 'held%');
+
+-- A9. The promote job has not completed in 2 hours (only if its schedule is switched on)
+SELECT MAX(event_time) AS last_promote_completed
+FROM ${catalog}.${schema}.dependency_events
+WHERE action = 'PROMOTE_COMPLETED'
+HAVING MAX(event_time) IS NULL OR MAX(event_time) < current_timestamp() - INTERVAL 2 HOURS;
+
+-- A10. A waiver request is waiting in JFrog, or a waiver request failed
+SELECT 'pending' AS state, channel, package, version, opened_at AS at
+FROM ${catalog}.${schema}.dependency_exceptions WHERE kind = 'WAIVER' AND status = 'OPEN'
+UNION ALL
+SELECT 'failed', channel, get_json_object(details, '$.package'), get_json_object(details, '$.version'), event_time
+FROM ${catalog}.${schema}.dependency_events
+WHERE action = 'WAIVER_FAILED' AND event_time >= current_timestamp() - INTERVAL 24 HOURS;
+
 -- ============================== CANARY HEALTH ===================================
 
 -- H1. Run failure rate of the canary jobs since a switch, against the 14 days before it.
@@ -66,12 +86,12 @@ GROUP BY 1;
 
 -- ============================== DASHBOARD =======================================
 
--- D1. Which release each compute policy uses now
-SELECT r.channel, r.wave, r.reference_id AS policy_id, r.release_id, r.previous_release_id,
+-- D1. Which release each compute policy and base environment uses now
+SELECT r.site, r.channel, r.wave, r.reference_type, r.reference_id, r.release_id, r.previous_release_id,
        r.updated_at, r.updated_by, rel.status
 FROM ${catalog}.${schema}.dependency_references r
 LEFT JOIN ${catalog}.${schema}.dependency_releases rel USING (release_id)
-ORDER BY r.channel, r.wave;
+ORDER BY r.site, r.channel, r.wave;
 
 -- D2. Release history
 SELECT release_id, channel, status, gate_status, test_passed, upgrade_packages,
@@ -101,3 +121,22 @@ SELECT lower(regexp_extract(library_spec, '^([A-Za-z0-9._-]+)', 1)) AS library, 
 FROM ${catalog}.${schema}.dependency_consumers
 WHERE library_kind IN ('pypi', 'pip_install', 'environment')
 GROUP BY 1 ORDER BY uses DESC LIMIT 100;
+
+-- D7. Rollout history
+SELECT rollout_id, channel, release_id, status, wave_name, started_at, updated_at, detail
+FROM ${catalog}.${schema}.dependency_rollouts
+ORDER BY started_at DESC LIMIT 100;
+
+-- D8. Migration report: will existing library requests work on the channel's release?
+-- (filled by:  run.py migration-report --channel <channel>)
+SELECT result, COUNT(*) AS requirements, COUNT(DISTINCT object_id) AS objects
+FROM ${catalog}.${schema}.dependency_migration
+GROUP BY result;
+
+-- D9. Migration report: what to fix before the egress block
+SELECT result, requirement, pinned_version, COUNT(DISTINCT object_id) AS objects,
+       array_join(slice(collect_set(object_name), 1, 5), ', ') AS examples
+FROM ${catalog}.${schema}.dependency_migration
+WHERE result IN ('VERSION_CONFLICT', 'NOT_IN_RELEASE')
+GROUP BY result, requirement, pinned_version
+ORDER BY objects DESC;

@@ -1,4 +1,4 @@
-"""The release registry: seven Delta tables in Unity Catalog.
+"""The release registry: nine Delta tables in Unity Catalog.
 
 ``SparkRegistry`` is used on Databricks. ``LocalRegistry`` keeps the same data
 in a JSON file and is used by the unit tests and for a dry run on a laptop.
@@ -39,11 +39,19 @@ TABLES: dict[str, str] = {
         issue_id STRING, severity STRING, kind STRING, status STRING, opened_at TIMESTAMP,
         deadline_at TIMESTAMP, approver STRING, rationale STRING, closed_at TIMESTAMP""",
     "dependency_references": """
-        channel STRING NOT NULL, wave STRING, reference_type STRING, reference_id STRING NOT NULL,
+        site STRING, channel STRING NOT NULL, wave STRING, reference_type STRING, reference_id STRING NOT NULL,
         release_id STRING, previous_release_id STRING, updated_at TIMESTAMP, updated_by STRING""",
     "dependency_consumers": """
         snapshot_at TIMESTAMP, workspace_host STRING, object_type STRING, object_id STRING,
         object_name STRING, owner STRING, policy_id STRING, library_kind STRING, library_spec STRING""",
+    "dependency_rollouts": """
+        rollout_id STRING NOT NULL, site STRING, channel STRING, release_id STRING, status STRING, wave_index INT,
+        wave_name STRING, wave_switched_at TIMESTAMP, started_at TIMESTAMP, updated_at TIMESTAMP,
+        detail STRING""",
+    "dependency_migration": """
+        snapshot_at TIMESTAMP, workspace_host STRING, object_type STRING, object_id STRING,
+        object_name STRING, owner STRING, requirement STRING, channel STRING, release_id STRING,
+        result STRING, pinned_version STRING""",
     "dependency_events": """
         event_id STRING NOT NULL, event_time TIMESTAMP, actor STRING, action STRING, release_id STRING,
         channel STRING, details STRING""",
@@ -71,6 +79,7 @@ class Registry:
     """Interface shared by SparkRegistry and LocalRegistry."""
 
     actor = "unknown"
+    site = "default"  # set from settings.yml; scopes compute references and rollouts
 
     # -- storage primitives implemented by subclasses --------------------------
     def _insert(self, table: str, rows: list[dict]) -> None:
@@ -82,7 +91,7 @@ class Registry:
     def _update(self, table: str, keys: dict[str, Any], fields: dict[str, Any]) -> None:
         raise NotImplementedError
 
-    def _delete_all(self, table: str) -> None:
+    def _delete(self, table: str, where: dict[str, Any]) -> None:
         raise NotImplementedError
 
     def init_tables(self) -> None:
@@ -134,12 +143,17 @@ class Registry:
         self._update("dependency_exceptions", {"exception_id": exception_id}, fields)
 
     # -- compute references ----------------------------------------------------
-    def list_references(self, channel: str | None = None) -> list[dict]:
-        return self._select("dependency_references", {"channel": channel} if channel else None)
+    def list_references(self, channel: str | None = None, all_sites: bool = False) -> list[dict]:
+        """Compute references of this site. ``all_sites=True`` returns every workspace's."""
+        where = {} if all_sites else {"site": self.site}
+        if channel:
+            where["channel"] = channel
+        return self._select("dependency_references", where or None)
 
     def set_reference(self, channel: str, wave: str, reference_type: str, reference_id: str,
                       release_id: str, previous_release_id: str | None) -> None:
-        keys = {"channel": channel, "reference_type": reference_type, "reference_id": reference_id}
+        keys = {"site": self.site, "channel": channel, "reference_type": reference_type,
+                "reference_id": reference_id}
         fields = {"wave": wave, "release_id": release_id, "previous_release_id": previous_release_id,
                   "updated_at": utcnow(), "updated_by": self.actor}
         if self._select("dependency_references", keys):
@@ -148,13 +162,44 @@ class Registry:
             self._insert("dependency_references", [{**keys, **fields}])
 
     def releases_in_use(self) -> list[str]:
-        return sorted({r["release_id"] for r in self.list_references() if r.get("release_id")})
+        """Releases that compute in any site points at."""
+        return sorted({r["release_id"] for r in self.list_references(all_sites=True) if r.get("release_id")})
 
     # -- consumers and events --------------------------------------------------
-    def replace_consumers(self, rows: list[dict]) -> None:
-        self._delete_all("dependency_consumers")
+    def replace_consumers(self, workspace_host: str, rows: list[dict]) -> None:
+        """Replace the snapshot of one workspace. Other workspaces' rows are kept."""
+        self._delete("dependency_consumers", {"workspace_host": workspace_host})
         if rows:
             self._insert("dependency_consumers", rows)
+
+    def list_consumers(self, workspace_host: str | None = None) -> list[dict]:
+        return self._select("dependency_consumers",
+                            {"workspace_host": workspace_host} if workspace_host else None)
+
+    def replace_migration(self, workspace_host: str, channel: str, rows: list[dict]) -> None:
+        self._delete("dependency_migration", {"workspace_host": workspace_host, "channel": channel})
+        if rows:
+            self._insert("dependency_migration", rows)
+
+    # -- rollouts --------------------------------------------------------------
+    def create_rollout(self, channel: str, release_id: str, wave_name: str) -> str:
+        rollout_id, now = uuid.uuid4().hex, utcnow()
+        self._insert("dependency_rollouts", [{
+            "rollout_id": rollout_id, "site": self.site, "channel": channel, "release_id": release_id,
+            "status": "IN_PROGRESS", "wave_index": 0, "wave_name": wave_name,
+            "wave_switched_at": now, "started_at": now, "updated_at": now, "detail": ""}])
+        return rollout_id
+
+    def update_rollout(self, rollout_id: str, **fields: Any) -> None:
+        self._update("dependency_rollouts", {"rollout_id": rollout_id},
+                     {**fields, "updated_at": utcnow()})
+
+    def list_rollouts(self, channel: str | None = None) -> list[dict]:
+        where = {"site": self.site}
+        if channel:
+            where["channel"] = channel
+        rows = self._select("dependency_rollouts", where)
+        return sorted(rows, key=lambda r: str(r.get("started_at") or ""), reverse=True)
 
     def add_event(self, action: str, release_id: str = "", channel: str = "",
                   details: dict | None = None) -> None:
@@ -214,8 +259,9 @@ class LocalRegistry(Registry):
                 row.update(self._clean(fields))
         self._save()
 
-    def _delete_all(self, table):
-        self.data[table] = []
+    def _delete(self, table, where):
+        self.data[table] = [r for r in self.data[table]
+                            if not all(r.get(k) == v for k, v in where.items())]
         self._save()
 
 
@@ -271,5 +317,6 @@ class SparkRegistry(Registry):
         args.update({f"key_{k}": v for k, v in keys.items()})
         self.spark.sql(f"UPDATE {self._name(table)} SET {sets} WHERE {clause}", args=args)
 
-    def _delete_all(self, table):
-        self.spark.sql(f"DELETE FROM {self._name(table)}")
+    def _delete(self, table, where):
+        clause = " AND ".join(f"{k} = :{k}" for k in where)
+        self.spark.sql(f"DELETE FROM {self._name(table)} WHERE {clause}", args=dict(where))

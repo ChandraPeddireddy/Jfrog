@@ -18,6 +18,13 @@ jfrog:
   scan_threads: 4
   releases_repo: ""                          # Artifactory repo that proxies releases.jfrog.io (for the CLI's Xray indexer); empty = direct download
 
+# Multi-workspace setup. Leave as is for a single workspace.
+#   site  a short name for this workspace. Compute references and rollouts are kept per site.
+#   role  hub = builds, approves and publishes (exactly one workspace per metastore);
+#         spoke = only rolls published releases out to its own compute.
+site: default
+role: hub
+
 uv_path: uv            # uv is installed from JFrog at run time if it is not on the cluster
 uv_version: ""         # pin a version here once one is approved, e.g. "0.11.32"
 max_resolve_retries: 15

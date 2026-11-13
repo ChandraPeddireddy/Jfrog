@@ -99,3 +99,20 @@ def run(
         redact(proc.stdout, secrets),
         redact(proc.stderr, secrets),
     )
+
+
+def copy_tree(src: str | Path, dst: str | Path) -> None:
+    """Copy a folder file by file, contents only.
+
+    ``shutil.copytree`` also copies permissions and timestamps, which storage
+    behind Unity Catalog volumes may refuse. This copies bytes and nothing else.
+    """
+    import os
+    import shutil
+
+    src, dst = Path(src), Path(dst)
+    for root, _dirs, files in os.walk(src):
+        target = dst / Path(root).relative_to(src)
+        target.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            shutil.copyfile(Path(root) / name, target / name)

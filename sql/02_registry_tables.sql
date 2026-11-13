@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.dependency_exceptions (
 );
 
 CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.dependency_references (
+  site STRING,
   channel STRING NOT NULL,
   wave STRING,
   reference_type STRING,
@@ -92,6 +93,34 @@ CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.dependency_consumers (
   policy_id STRING,
   library_kind STRING,
   library_spec STRING
+);
+
+CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.dependency_rollouts (
+  rollout_id STRING NOT NULL,
+  site STRING,
+  channel STRING,
+  release_id STRING,
+  status STRING,
+  wave_index INT,
+  wave_name STRING,
+  wave_switched_at TIMESTAMP,
+  started_at TIMESTAMP,
+  updated_at TIMESTAMP,
+  detail STRING
+);
+
+CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.dependency_migration (
+  snapshot_at TIMESTAMP,
+  workspace_host STRING,
+  object_type STRING,
+  object_id STRING,
+  object_name STRING,
+  owner STRING,
+  requirement STRING,
+  channel STRING,
+  release_id STRING,
+  result STRING,
+  pinned_version STRING
 );
 
 CREATE TABLE IF NOT EXISTS ${catalog}.${schema}.dependency_events (

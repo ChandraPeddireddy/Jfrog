@@ -52,6 +52,10 @@ class Settings:
     max_resolve_retries: int = 15
     # Local test mode: resolve from a folder of wheels instead of JFrog.
     find_links: str | None = None
+    # One name per workspace that switches compute. Compute references and rollouts are kept per site.
+    site: str = "default"
+    # hub: this workspace builds, approves and publishes. spoke: it only rolls releases out to its own compute.
+    role: str = "hub"
     # Root of Unity Catalog volume paths. Only changed in local tests.
     volumes_root: str = "/Volumes"
 
@@ -73,6 +77,11 @@ class Settings:
     def release_path(self, release_id: str) -> str:
         return f"{self.releases_root}/{release_id}"
 
+    @property
+    def environments_root(self) -> str:
+        """Serverless environment YAML files, written by the promoter."""
+        return f"{self.wheelhouse_root}/environments"
+
     def table(self, name: str) -> str:
         return f"{self.catalog}.{self.schema}.{name}"
 
@@ -87,6 +96,29 @@ class Policy:
     # Hours an approved release may stay in use after a new blocking finding.
     grace_hours: dict[str, int] = field(default_factory=dict)
     grace_values_approved: bool = False
+    # manual: Security approves every release.
+    # security_rebuilds: releases built with upgrade_package are approved by the rules; others manually.
+    # automatic: every release that passes the gate and the tests is approved by the rules.
+    approval_mode: str = "manual"
+    # off: never ask JFrog for a waiver. request: ask for a Curation waiver when the fix is too new.
+    waiver_mode: str = "off"
+    # alert: only record that a grace deadline passed. revoke: also mark the release REVOKED.
+    on_grace_expiry: str = "alert"
+    retention_days: int = 7  # keep an unused release this long after compute left it
+    staging_retention_days: int = 30
+
+    def __post_init__(self) -> None:
+        if self.waiver_mode is False:  # YAML reads an unquoted  off  as false
+            self.waiver_mode = "off"
+        allowed = {"approval_mode": ("manual", "security_rebuilds", "automatic"),
+                   "waiver_mode": ("off", "request"), "on_grace_expiry": ("alert", "revoke")}
+        for name, values in allowed.items():
+            if getattr(self, name) not in values:
+                raise ValueError(f"policy.yml: {name} must be one of {values}, not {getattr(self, name)!r}")
+
+    def auto_approves(self, is_security_rebuild: bool) -> bool:
+        return self.approval_mode == "automatic" or (
+            self.approval_mode == "security_rebuilds" and is_security_rebuild)
 
     def blocks(self, severity: str) -> bool:
         return canonical_severity(severity) in self.block_severities
@@ -98,8 +130,27 @@ class Policy:
 @dataclass
 class Wave:
     name: str
-    policy_ids: list[str] = field(default_factory=list)
+    policy_ids: list[str] = field(default_factory=list)  # classic compute policies
+    base_environments: list[str] = field(default_factory=list)  # serverless: workspace-base-environments/<id>
     job_ids: list[str] = field(default_factory=list)  # used only for the health check
+
+
+@dataclass
+class Rollout:
+    """How a release moves through the waves when the promote job drives it."""
+
+    auto: bool = False  # false: Ops starts every wave by hand
+    soak_hours: float = 24  # minimum time on a wave before the next one
+    urgent_soak_hours: float = 2  # used for security rebuilds (built with upgrade_package)
+    min_runs: int = 20  # canary runs needed before the failure rate is judged
+    max_increase: float = 0.05  # allowed rise in failure rate over the baseline
+    baseline_days: int = 14
+    max_wait_hours: float = 72  # how long to wait for min_runs
+    on_insufficient_data: str = "hold"  # hold | proceed, after max_wait_hours without min_runs
+
+    def __post_init__(self) -> None:
+        if self.on_insufficient_data not in ("hold", "proceed"):
+            raise ValueError("channel.yml: rollout.on_insufficient_data must be hold or proceed")
 
 
 @dataclass
@@ -113,6 +164,11 @@ class Channel:
     extra_imports: list[str] = field(default_factory=list)
     smoke_tests: list[str] = field(default_factory=list)  # python files run after imports
     waves: list[Wave] = field(default_factory=list)
+    rollout: Rollout = field(default_factory=Rollout)
+    # Also set PIP_NO_INDEX / PIP_FIND_LINKS on the compute policy, so existing
+    # "%pip install" lines resolve from the release (POC test P11).
+    pip_redirect: bool = False
+    serverless_environment_version: str = "4"
 
     def wave(self, name: str) -> Wave:
         for wave in self.waves:
@@ -153,12 +209,16 @@ class Config:
         for wave in waves:
             wave.policy_ids = [str(x) for x in wave.policy_ids]
             wave.job_ids = [str(x) for x in wave.job_ids]
+            wave.base_environments = [str(x) for x in wave.base_environments]
+        rollout = Rollout(**(raw.pop("rollout", None) or {}))
+        raw["serverless_environment_version"] = str(raw.get("serverless_environment_version", "4"))
         smoke = [str(cdir / s) for s in raw.pop("smoke_tests", None) or []]
         return Channel(
             name=name,
             requirements_in=str(cdir / "channel.in"),
             constraints=str(cdir / "constraints.txt"),
             waves=waves,
+            rollout=rollout,
             smoke_tests=smoke,
             **raw,
         )

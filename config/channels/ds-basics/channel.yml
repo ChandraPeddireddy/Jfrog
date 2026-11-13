@@ -11,12 +11,34 @@ extra_imports: []
 # Optional team smoke tests: python files in this folder, run after the import test.
 smoke_tests: []
 
-# Waves are switched one at a time. policy_ids are compute policy IDs.
-# job_ids are only used by the health check (jobs that run on those policies).
+# Also set PIP_NO_INDEX and PIP_FIND_LINKS on the compute policies, so existing
+# "%pip install" lines in notebooks resolve from the release. Turn on after POC test P11.
+pip_redirect: false
+
+# Serverless environment version written into the base environment YAML.
+serverless_environment_version: "4"
+
+# Waves are switched one at a time, in this order.
+#   policy_ids         classic compute policy IDs
+#   base_environments  serverless workspace base environments, created with "run.py serverless-init"
+#   job_ids            jobs that run on this wave; only used by the health check
 waves:
   - name: canary
-    policy_ids: []      # CHANGE-ME: for example ["000F1A2B3C4D5E6F"]
+    policy_ids: []          # CHANGE-ME: for example ["000F1A2B3C4D5E6F"]
+    base_environments: []   # for example ["workspace-base-environments/ds-basics-canary"]
     job_ids: []
   - name: main
     policy_ids: []
+    base_environments: []
     job_ids: []
+
+# How the libdist-promote job moves a release through the waves (decision D8).
+rollout:
+  auto: false               # false: Ops starts each wave with libdist-switch. true: the promote job does.
+  soak_hours: 24            # minimum time on a wave before the next one
+  urgent_soak_hours: 2      # the same, for a security rebuild
+  min_runs: 20              # runs of job_ids needed before the failure rate is judged
+  max_increase: 0.05        # allowed rise in failure rate over the baseline (0.05 = 5 points)
+  baseline_days: 14
+  max_wait_hours: 72        # how long to wait for min_runs
+  on_insufficient_data: hold   # hold (alert and wait for a person) or proceed

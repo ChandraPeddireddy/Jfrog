@@ -1,6 +1,6 @@
 # Secure Python library distribution on Databricks
 
-This repository holds the phase 1 implementation of the design in
+This repository implements the design in
 [`docs/Library_Distribution_Proposed_Solution.docx`](docs/Library_Distribution_Proposed_Solution.docx).
 
 **What it does.** A release pipeline downloads Python libraries through JFrog ahead of time,
@@ -8,15 +8,23 @@ scans them with Xray, tests them, and stores each approved set as a read-only *r
 Unity Catalog volume (the *approved wheelhouse*). Databricks compute installs from the wheelhouse,
 offline. A job start no longer calls JFrog, so a new Curation or Xray block cannot fail it.
 
-**Status.** The code is written and unit-tested. It has **not** been run against a real
-Databricks workspace, JFrog Artifactory or Xray. Read [`docs/STATUS.md`](docs/STATUS.md) before
-you plan a deployment: it lists what was tested, what was not, and what is not built yet.
+**Scope.** The code covers all three phases of the proposal: the pilot (manual approval, manual
+waves), the shared service (automatic approval by rules, automatic rollouts with a health check,
+Curation waiver requests, serverless), and scale-out (several workspaces and metastores, clean-up).
+Every automation is a switch that ships **off**. You turn them on stage by stage.
+
+**Status.** The code is written and has 80 passing tests on a developer machine. It has **not**
+been run against a real Databricks workspace, JFrog Artifactory or Xray. The parts that talk to
+those systems were written from their documentation, and some will need changes once they run.
+[`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) lists those points stage by stage, with the
+change each outcome needs. [`docs/STATUS.md`](docs/STATUS.md) lists what is and is not proven.
 
 ## Where to start
 
 | You are | Read |
 |---|---|
-| Ops, deploying the pipeline | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
+| Ops, implementing the solution | [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md): the master plan, 11 stages |
+| Ops, doing the first deployment | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): step-by-step commands |
 | Ops, running it day to day | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) |
 | Running the proof of concept | [`docs/POC_TESTS.md`](docs/POC_TESTS.md) |
 | Security, reviewing the rules | [`config/policy.yml`](config/policy.yml), [`sql/approve_release.sql`](sql/approve_release.sql) |
@@ -25,21 +33,24 @@ you plan a deployment: it lists what was tested, what was not, and what is not b
 ## How it works
 
 ```
- channel.in ──► libdist-build (builder SP) ──► staging volume ──► Security approves (SQL)
- (libraries)     resolve → scan → test          candidate           │
-                      ▲                                             ▼
-                      │                               libdist-publish (promoter SP)
-                JFrog Artifactory                     copy, verify every hash
-                Curation + Xray                                     │
-                      ▲                                             ▼
-                      │                                   wheelhouse volume
- libdist-reassess ────┘                               releases/<release_id>/
- every 4 hours: rescan releases in use,                             │
- open a grace period for a new finding,               libdist-switch (promoter SP)
- start a replacement build                            re-point compute policies, wave by wave
-                                                                    │
-                                                                    ▼
-                                                  compute installs install.txt, offline
+ channel.in ──► libdist-build (builder) ──► staging volume ──► approval
+ (libraries)     resolve → scan → test        candidate         by Security (SQL), or by the rules
+                      ▲                                                  │
+                      │                                                  ▼
+                JFrog Artifactory                          libdist-promote (promoter)
+                Curation + Xray                            publish: copy, verify every hash
+                      ▲                                                  │
+                      │                                                  ▼
+ libdist-reassess ────┘                                         wheelhouse volume
+ every 4 hours: rescan releases in use,                      releases/<release_id>/
+ open a grace period for a new finding,                                  │
+ start a replacement build, retry until                                  ▼
+ one is on the way                                 rollout, wave by wave, with a health check:
+                                                   compute policies (classic)
+                                                   base environments (serverless)
+                                                                         │
+                                                                         ▼
+                                                      compute installs the release, offline
 ```
 
 One release folder looks like this and is never changed after it is published:
@@ -65,30 +76,38 @@ A compute policy points at one release with a single library entry:
 
 | Path | Content |
 |---|---|
-| `databricks.yml`, `resources/jobs.yml` | Databricks Asset Bundle: seven jobs |
+| `databricks.yml`, `resources/jobs.yml` | Databricks Asset Bundle: nine jobs |
 | `config/settings.yml` | Catalog, schema, volumes, JFrog connection |
 | `config/policy.yml` | Security rules as code: blocked severities, grace periods |
 | `config/channels/<name>/` | One folder per channel: `channel.in`, `constraints.txt`, `channel.yml` |
 | `src/run.py`, `src/libdist/` | Pipeline code |
 | `sql/` | Unity Catalog setup, registry tables, grants, approval, monitoring queries |
-| `examples/` | Example compute policy, consumer check notebook, P0 reproduction script |
+| `examples/` | Example compute policy, consumer check notebook, start-up gate, P0 reproduction script |
 | `tests/` | Unit and local end-to-end tests |
-| `docs/` | Deployment guide, runbook, POC tests, status, the proposed solution |
+| `docs/` | Implementation guide, deployment steps, runbook, POC tests, status, the proposed solution |
 
 ## The jobs
 
 | Job | Runs as | What it does |
 |---|---|---|
-| `libdist-build` | builder | Builds one candidate release for a channel. Result: `READY_FOR_APPROVAL`, `QUARANTINED` or `FAILED`. |
-| `libdist-publish` | promoter | Copies an `APPROVED` release to the wheelhouse and verifies every hash. |
-| `libdist-switch` | promoter | Points one wave of compute policies at a published release. |
-| `libdist-rollback` | promoter | Points a wave back at its previous release, if that release is still eligible. |
+| `libdist-build` | builder | Builds one candidate release for a channel. Result: `READY_FOR_APPROVAL`, `QUARANTINED` or `FAILED`. Can request a Curation waiver. |
+| `libdist-reassess` | builder | Every 4 hours: rescans releases in use, opens grace periods, starts and retries replacement builds. |
+| `libdist-discover` | builder | Daily: records which libraries jobs, clusters, policies and notebooks use. |
+| `libdist-promote` | promoter | Every 30 minutes: approves by the rules (if allowed), publishes approved releases, starts rollouts and moves them wave by wave, rolls back an unhealthy wave. |
+| `libdist-publish` | promoter | Manual: copies one `APPROVED` release to the wheelhouse and verifies every hash. |
+| `libdist-switch` | promoter | Manual: points one wave at a published release. |
+| `libdist-rollback` | promoter | Manual: points a wave back at its previous release, if that release is still eligible. |
 | `libdist-revoke` | promoter | Marks a release `REVOKED` and lists the compute that still uses it. |
-| `libdist-reassess` | builder | Every 4 hours: rescans releases in use, opens grace periods, starts replacement builds. |
-| `libdist-discover` | builder | Daily: records which libraries jobs, clusters and policies use. |
+| `libdist-cleanup` | promoter | Weekly: reports, and with `apply=true` deletes, old candidates and unused releases. |
 
-Approval is not a job. A security approver runs [`sql/approve_release.sql`](sql/approve_release.sql)
+The manual jobs always work. `libdist-promote` does the same steps on a schedule once you switch it on.
+
+In manual approval mode a security approver runs [`sql/approve_release.sql`](sql/approve_release.sql)
 as themselves, so the registry records who approved.
+
+Other commands run from a notebook or a one-off job: `serverless-init`, `rollout-start`,
+`migration-report`, `import-release`, `waiver`, `verify`, `status`. Run
+`python src/run.py --help` for the list.
 
 ## Add a library
 

@@ -34,11 +34,14 @@ def _workspace_client():
 
 def _registry(args, cfg: Config) -> reg.Registry:
     if args.local_registry:
-        return reg.LocalRegistry(args.local_registry)
-    from pyspark.sql import SparkSession
+        registry: reg.Registry = reg.LocalRegistry(args.local_registry)
+    else:
+        from pyspark.sql import SparkSession
 
-    spark = SparkSession.builder.getOrCreate()
-    return reg.SparkRegistry(spark, cfg.settings.catalog, cfg.settings.schema)
+        spark = SparkSession.builder.getOrCreate()
+        registry = reg.SparkRegistry(spark, cfg.settings.catalog, cfg.settings.schema)
+    registry.site = cfg.settings.site
+    return registry
 
 
 def _jfrog_credentials(cfg: Config) -> tuple[str, str]:
@@ -119,7 +122,7 @@ def cmd_build(args, cfg):
     from .resolve import IndexAccess, make_block_classifier
 
     registry = _registry(args, cfg)
-    classify = None
+    classify, token = None, ""
     if cfg.settings.find_links:
         access = IndexAccess.for_settings(cfg.settings)
     else:
@@ -128,8 +131,18 @@ def cmd_build(args, cfg):
         classify = make_block_classifier(user, token)
     _ensure_uv(cfg, access.env)
     upgrades = [p.strip() for p in (args.upgrade_package or "").split(",") if p.strip()]
+    waiver = None
+    if cfg.policy.waiver_mode == "request" and not cfg.settings.find_links:
+        from .waiver import request_waiver
+
+        jf = cfg.settings.jfrog
+
+        def waiver(package: str, version: str, reason: str) -> dict:
+            return request_waiver(jf.platform_url, token, package, version, jf.curated_repo, reason)
+
     summary = build_release(cfg, args.channel, registry, access, _scanner(args, cfg),
-                            upgrade_packages=upgrades, full_upgrade=args.full_upgrade, classify=classify)
+                            upgrade_packages=upgrades, full_upgrade=args.full_upgrade, classify=classify,
+                            request_waiver=waiver)
     _print(summary)
     return 0 if summary["status"] == reg.READY_FOR_APPROVAL else 2
 
@@ -149,23 +162,105 @@ def cmd_verify(args, cfg):
     return 0 if not problems else 2
 
 
-def _policies(args):
-    from .references import PolicyClient
+def _clients():
+    """Clients for the two kinds of compute reference: policies and serverless base environments."""
+    from .references import BaseEnvironmentClient, PolicyClient
 
-    return PolicyClient(_workspace_client())
+    client = _workspace_client()
+    return PolicyClient(client), BaseEnvironmentClient(client)
 
 
 def cmd_switch(args, cfg):
     from .promote import switch
 
-    _print(switch(cfg, _registry(args, cfg), _policies(args), args.release_id, args.wave))
+    policies, environments = _clients()
+    _print(switch(cfg, _registry(args, cfg), policies, args.release_id, args.wave, environments=environments))
     return 0
 
 
 def cmd_rollback(args, cfg):
     from .promote import rollback
 
-    _print(rollback(cfg, _registry(args, cfg), _policies(args), args.channel, args.wave))
+    policies, environments = _clients()
+    _print(rollback(cfg, _registry(args, cfg), policies, args.channel, args.wave, environments=environments))
+    return 0
+
+
+def cmd_promote(args, cfg):
+    """The scheduled promote job: approve by the rules, publish, start and advance rollouts."""
+    from pyspark.sql import SparkSession
+
+    from .health import check
+    from .orchestrate import advance
+
+    spark = SparkSession.builder.getOrCreate()
+
+    def health(job_ids, switch_time, baseline_days, min_runs, max_increase):
+        return check(spark, job_ids, switch_time, baseline_days, min_runs, max_increase)
+
+    policies, environments = _clients()
+    summary = advance(cfg, _registry(args, cfg), policies, environments, health)
+    _print(summary)
+    return 1 if any("error" in r for r in summary.values()) else 0
+
+
+def cmd_rollout_start(args, cfg):
+    from .orchestrate import start_rollout
+
+    policies, environments = _clients()
+    _print({"rollout_id": start_rollout(cfg, _registry(args, cfg), policies, environments, args.release_id)})
+    return 0
+
+
+def cmd_serverless_init(args, cfg):
+    """Write the environment YAML for one wave and register it as a workspace base environment."""
+    from .references import render_environment_yaml
+
+    registry = _registry(args, cfg)
+    row = registry.get_release(args.release_id)
+    if not row or row["status"] != reg.PUBLISHED:
+        raise SystemExit(f"{args.release_id} is not PUBLISHED")
+    channel = cfg.channel(row["channel"])
+    channel.wave(args.wave)  # must exist
+    environment_id = f"{channel.name}-{args.wave}"
+    path = Path(cfg.settings.environments_root) / f"{environment_id}.yml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_environment_yaml(row["release_path"], channel.serverless_environment_version))
+    _, environments = _clients()
+    environments.create(environment_id, f"{channel.name} ({args.wave})", str(path))
+    name = f"workspace-base-environments/{environment_id}"
+    registry.set_reference(channel.name, args.wave, "base_environment", name, args.release_id, None)
+    registry.add_event("SERVERLESS_INIT", args.release_id, channel.name, {"name": name, "filepath": str(path)})
+    _print({"base_environment": name, "filepath": str(path),
+            "next": f"add {name!r} to base_environments of wave {args.wave!r} in channel.yml and redeploy"})
+    return 0
+
+
+def cmd_cleanup(args, cfg):
+    from .cleanup import cleanup
+
+    _print(cleanup(cfg, _registry(args, cfg), apply=str(args.apply).lower() == "true"))
+    return 0
+
+
+def cmd_import_release(args, cfg):
+    from .transfer import import_release
+
+    _print(import_release(cfg, _registry(args, cfg), args.source_path))
+    return 0
+
+
+def cmd_migration_report(args, cfg):
+    from .migrate import migration_report
+
+    registry = _registry(args, cfg)
+    release_id = args.release_id
+    if not release_id:
+        published = registry.list_releases(args.channel, [reg.PUBLISHED])
+        if not published:
+            raise SystemExit(f"channel {args.channel} has no published release")
+        release_id = published[0]["release_id"]
+    _print(migration_report(registry, args.channel, release_id, cfg.settings.release_path(release_id)))
     return 0
 
 
@@ -223,9 +318,10 @@ def cmd_waiver(args, cfg):
 def cmd_discover(args, cfg):
     from .discover import discover
 
-    rows = discover(_workspace_client(), args.notebook_root, args.max_notebooks)
-    _registry(args, cfg).replace_consumers(rows)
-    _print({"consumer_rows": len(rows)})
+    client = _workspace_client()
+    rows = discover(client, args.notebook_root, args.max_notebooks)
+    _registry(args, cfg).replace_consumers(client.config.host or "", rows)
+    _print({"workspace": client.config.host, "consumer_rows": len(rows)})
     return 0
 
 
@@ -236,6 +332,7 @@ def cmd_status(args, cfg):
             "approved_by", "created_at")
     _print({
         "releases": [{k: r.get(k) for k in keep} for r in releases],
+        "rollouts": registry.list_rollouts(args.channel)[:5],
         "references": registry.list_references(args.channel),
         "open_exceptions": registry.list_exceptions(status="OPEN"),
     })
@@ -328,6 +425,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--channel", default=None)
     p.add_argument("--limit", type=int, default=10)
     p.set_defaults(func=cmd_status)
+
+    sub.add_parser("promote", help="approve by the rules, publish, start and advance rollouts"
+                   ).set_defaults(func=cmd_promote)
+
+    p = sub.add_parser("rollout-start", help="start a rollout of a published release at its first wave")
+    p.add_argument("--release-id", required=True)
+    p.set_defaults(func=cmd_rollout_start)
+
+    p = sub.add_parser("serverless-init", help="create the serverless base environment for one wave")
+    p.add_argument("--release-id", required=True)
+    p.add_argument("--wave", required=True)
+    p.set_defaults(func=cmd_serverless_init)
+
+    p = sub.add_parser("cleanup", help="delete old candidates and unused releases (report only by default)")
+    p.add_argument("--apply", default="false", help="true to delete; anything else only reports")
+    p.set_defaults(func=cmd_cleanup)
+
+    p = sub.add_parser("import-release", help="register a release published in another metastore")
+    p.add_argument("--source-path", required=True)
+    p.set_defaults(func=cmd_import_release)
+
+    p = sub.add_parser("migration-report", help="compare discovered library requests with a release")
+    p.add_argument("--channel", required=True)
+    p.add_argument("--release-id", default="")
+    p.set_defaults(func=cmd_migration_report)
 
     p = sub.add_parser("approve-local", help=argparse.SUPPRESS)
     p.add_argument("--release-id", required=True)

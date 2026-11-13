@@ -2,7 +2,8 @@
 # All jobs share one single-node cluster definition (the &pipeline_cluster anchor in the first job).
 #
 #   builder service principal : build, reassess, discover   (talks to JFrog; no write to the wheelhouse)
-#   promoter service principal: publish, switch, rollback, revoke   (writes the wheelhouse and compute policies)
+#   promoter service principal: promote, publish, switch, rollback, revoke, cleanup
+#                               (writes the wheelhouse, compute policies and serverless base environments)
 
 resources:
   jobs:
@@ -40,7 +41,7 @@ resources:
             python_file: ../src/run.py
             parameters:
               - --config-dir
-              - ${workspace.file_path}/config
+              - ${workspace.file_path}/${var.config_dir}
               - build
               - --channel
               - "{{job.parameters.channel}}"
@@ -70,7 +71,7 @@ resources:
             python_file: ../src/run.py
             parameters:
               - --config-dir
-              - ${workspace.file_path}/config
+              - ${workspace.file_path}/${var.config_dir}
               - reassess
               - --build-job-id
               - ${resources.jobs.libdist_build.id}
@@ -99,7 +100,7 @@ resources:
             python_file: ../src/run.py
             parameters:
               - --config-dir
-              - ${workspace.file_path}/config
+              - ${workspace.file_path}/${var.config_dir}
               - discover
               - --notebook-root
               - "{{job.parameters.notebook_root}}"
@@ -125,7 +126,7 @@ resources:
             python_file: ../src/run.py
             parameters:
               - --config-dir
-              - ${workspace.file_path}/config
+              - ${workspace.file_path}/${var.config_dir}
               - publish
               - --release-id
               - "{{job.parameters.release_id}}"
@@ -153,7 +154,7 @@ resources:
             python_file: ../src/run.py
             parameters:
               - --config-dir
-              - ${workspace.file_path}/config
+              - ${workspace.file_path}/${var.config_dir}
               - switch
               - --release-id
               - "{{job.parameters.release_id}}"
@@ -183,7 +184,7 @@ resources:
             python_file: ../src/run.py
             parameters:
               - --config-dir
-              - ${workspace.file_path}/config
+              - ${workspace.file_path}/${var.config_dir}
               - rollback
               - --channel
               - "{{job.parameters.channel}}"
@@ -211,9 +212,65 @@ resources:
             python_file: ../src/run.py
             parameters:
               - --config-dir
-              - ${workspace.file_path}/config
+              - ${workspace.file_path}/${var.config_dir}
               - revoke
               - --release-id
               - "{{job.parameters.release_id}}"
               - --reason
               - "{{job.parameters.reason}}"
+
+    libdist_promote:
+      name: libdist-promote
+      description: >-
+        Zero-touch promotion. Approves by the rules when policy.yml allows it, publishes approved
+        releases, starts rollouts and moves them wave by wave with a health check.
+      run_as:
+        service_principal_name: ${var.promoter_sp}
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: "0 0/30 * * * ?"  # every 30 minutes
+        timezone_id: UTC
+        pause_status: PAUSED                      # unpause when phase 2 starts
+      email_notifications:
+        on_failure: ["${var.notification_email}"]
+      job_clusters:
+        - job_cluster_key: pipeline
+          new_cluster: *pipeline_cluster
+      tasks:
+        - task_key: promote
+          job_cluster_key: pipeline
+          timeout_seconds: 3600
+          spark_python_task:
+            python_file: ../src/run.py
+            parameters:
+              - --config-dir
+              - ${workspace.file_path}/${var.config_dir}
+              - promote
+
+    libdist_cleanup:
+      name: libdist-cleanup
+      description: Delete old candidates and unused releases by the retention rules. Reports only unless apply=true.
+      run_as:
+        service_principal_name: ${var.promoter_sp}
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: "0 0 6 ? * SUN"   # weekly
+        timezone_id: UTC
+        pause_status: PAUSED
+      parameters:
+        - name: apply
+          default: "false"
+      job_clusters:
+        - job_cluster_key: pipeline
+          new_cluster: *pipeline_cluster
+      tasks:
+        - task_key: cleanup
+          job_cluster_key: pipeline
+          spark_python_task:
+            python_file: ../src/run.py
+            parameters:
+              - --config-dir
+              - ${workspace.file_path}/${var.config_dir}
+              - cleanup
+              - --apply
+              - "{{job.parameters.apply}}"
