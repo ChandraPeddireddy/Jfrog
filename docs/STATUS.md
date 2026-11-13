@@ -6,7 +6,7 @@ Read this before planning the work. It is the honest state of the code in this r
 
 - The code covers **all three phases** of the proposed solution. Every automation is a switch
   that ships off.
-- **80 automated tests pass** on a developer machine.
+- **83 automated tests pass** on a developer machine.
 - **Nothing has been run against a real Databricks workspace, JFrog Artifactory or Xray.**
   Every part that talks to those systems is written from public documentation. Some of it will
   need changes when it first runs. [IMPLEMENTATION.md](IMPLEMENTATION.md) lists the known points
@@ -59,7 +59,7 @@ tables are **fakes**. A 403 is simulated by returning pip's error text.
 | Resolve, exclusion and retry, no safe version, one-package rebuild | `tests/test_pipeline.py` |
 | Offline install; a modified wheel fails | `tests/test_pipeline.py` |
 | Build, publish, verify, switch, rollback, refused rollback, revoke | `tests/test_pipeline.py` |
-| Grace period opened once, expired, extended by Security | `tests/test_pipeline.py` |
+| Grace period opened once, expired, extended by Security; a finding that becomes blocking later | `tests/test_pipeline.py` |
 | Zero-touch flow from candidate to all waves; soak times; unhealthy canary rolled back and not retried | `tests/test_automation.py` |
 | Too few canary runs: hold or proceed | `tests/test_automation.py` |
 | Approval modes | `tests/test_automation.py` |

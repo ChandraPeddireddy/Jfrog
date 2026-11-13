@@ -13,7 +13,7 @@ waves), the shared service (automatic approval by rules, automatic rollouts with
 Curation waiver requests, serverless), and scale-out (several workspaces and metastores, clean-up).
 Every automation is a switch that ships **off**. You turn them on stage by stage.
 
-**Status.** The code is written and has 80 passing tests on a developer machine. It has **not**
+**Status.** The code is written and has 83 passing tests on a developer machine. It has **not**
 been run against a real Databricks workspace, JFrog Artifactory or Xray. The parts that talk to
 those systems were written from their documentation, and some will need changes once they run.
 [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) lists those points stage by stage, with the
@@ -23,6 +23,7 @@ change each outcome needs. [`docs/STATUS.md`](docs/STATUS.md) lists what is and 
 
 | You are | Read |
 |---|---|
+| Anyone receiving this package | [`docs/HANDOVER.md`](docs/HANDOVER.md): what is in it, who needs what, what to do first |
 | Ops, implementing the solution | [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md): the master plan, 11 stages |
 | Ops, doing the first deployment | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): step-by-step commands |
 | Ops, running it day to day | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) |
@@ -76,7 +77,7 @@ A compute policy points at one release with a single library entry:
 
 | Path | Content |
 |---|---|
-| `databricks.yml`, `resources/jobs.yml` | Databricks Asset Bundle: nine jobs |
+| `databricks.yml`, `resources/jobs.yml` | Databricks Asset Bundle: eleven jobs |
 | `config/settings.yml` | Catalog, schema, volumes, JFrog connection |
 | `config/policy.yml` | Security rules as code: blocked severities, grace periods |
 | `config/channels/<name>/` | One folder per channel: `channel.in`, `constraints.txt`, `channel.yml` |
@@ -99,15 +100,20 @@ A compute policy points at one release with a single library entry:
 | `libdist-rollback` | promoter | Manual: points a wave back at its previous release, if that release is still eligible. |
 | `libdist-revoke` | promoter | Marks a release `REVOKED` and lists the compute that still uses it. |
 | `libdist-cleanup` | promoter | Weekly: reports, and with `apply=true` deletes, old candidates and unused releases. |
+| `libdist-run-builder`, `libdist-run-promoter` | builder, promoter | Run any other command once, as the right identity. |
 
 The manual jobs always work. `libdist-promote` does the same steps on a schedule once you switch it on.
 
 In manual approval mode a security approver runs [`sql/approve_release.sql`](sql/approve_release.sql)
 as themselves, so the registry records who approved.
 
-Other commands run from a notebook or a one-off job: `serverless-init`, `rollout-start`,
-`migration-report`, `import-release`, `waiver`, `verify`, `status`. Run
-`python src/run.py --help` for the list.
+Commands without a job of their own (`serverless-init`, `rollout-start`, `migration-report`,
+`import-release`, `waiver`, `verify`, `status`) run through `libdist-run-builder` or
+`libdist-run-promoter`:
+
+```bash
+databricks bundle run -t prod libdist_run_promoter --params 'command=status --channel ds-basics'
+```
 
 ## Add a library
 

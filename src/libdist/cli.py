@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -458,8 +459,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def expand_command_line(argv: list[str]) -> list[str]:
+    """``--command-line "status --channel x"`` becomes ``status --channel x``.
+
+    The two libdist-run-* jobs pass a whole command as one job parameter this way.
+    """
+    if "--command-line" not in argv:
+        return argv
+    index = argv.index("--command-line")
+    if index + 1 >= len(argv) or not argv[index + 1].strip():
+        raise SystemExit("--command-line needs a command, for example: status --channel ds-basics")
+    return argv[:index] + shlex.split(argv[index + 1])
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = build_parser().parse_args(expand_command_line(list(sys.argv[1:] if argv is None else argv)))
     setup_logging(args.log_level)
     cfg = Config(args.config_dir)
     try:

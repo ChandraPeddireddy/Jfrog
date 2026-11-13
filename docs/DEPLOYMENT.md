@@ -27,7 +27,7 @@ Do the steps in order. Each step ends with a check. Use a **non-production works
 
 | Item | Detail |
 |---|---|
-| Databricks CLI | Version 0.218 or later, authenticated to the workspace (`databricks auth login`) |
+| Databricks CLI | A current version of the new CLI (the one with `databricks bundle`), authenticated to the workspace (`databricks auth login`). Check with `databricks bundle --help`. |
 | Git | To clone this repository |
 | JFrog service account | Read access to the PyPI repository that Curation protects; permission to run Xray on-demand scans |
 | JFrog CLI (`jf`) | Linux amd64 binary, the version your JFrog admin approves |
@@ -99,7 +99,8 @@ Only the builder gets `READ`. Do not grant the scope to the promoter or to users
 
 1. Get the `jf` Linux amd64 binary from your JFrog admin (or from your Artifactory proxy of
    `releases.jfrog.io`).
-2. Upload it to the tools volume:
+2. Upload it to the tools volume, as an identity that may write to it (the schema owner can;
+   otherwise grant yourself `WRITE VOLUME` on `tools`):
 
    ```bash
    databricks fs cp ./jf dbfs:/Volumes/<catalog>/<schema>/tools/jf
@@ -115,7 +116,8 @@ repository that proxies it.
 
 ## Step 5. Edit the configuration
 
-All values to change are marked `CHANGE-ME`.
+All values to change are marked `CHANGE-ME`. Remove each marker as you set the value, so the
+check at the end of this step is meaningful.
 
 | File | Change |
 |---|---|
@@ -132,7 +134,7 @@ for that runtime only.
 Commit the changes to your own Git repository. Do not commit tokens.
 
 **Check:** `grep -rn CHANGE-ME config databricks.yml` shows only the target you are not deploying
-and the `policy_ids` lines.
+and the `policy_ids` line of `channel.yml` (filled in step 9).
 
 ## Step 6. Deploy the bundle
 
@@ -141,15 +143,18 @@ databricks bundle validate -t dev
 databricks bundle deploy -t dev
 ```
 
-This uploads the code and creates nine jobs (see the README). The four scheduled jobs are created paused.
+This uploads the code and creates eleven jobs (see the README). The four scheduled jobs are created paused.
 
 **Check:** the Jobs page lists `libdist-build`, `libdist-reassess`, `libdist-discover`,
-`libdist-promote`, `libdist-publish`, `libdist-switch`, `libdist-rollback`, `libdist-revoke` and `libdist-cleanup`. In `dev` mode the
+`libdist-promote`, `libdist-publish`, `libdist-switch`, `libdist-rollback`, `libdist-revoke`, `libdist-cleanup`,
+`libdist-run-builder` and `libdist-run-promoter`. In `dev` mode the
 names carry a `[dev <your name>]` prefix.
 
 ## Step 7. Create the registry tables
 
-1. Open `sql/02_registry_tables.sql`, replace `${catalog}` and `${schema}`, and run it.
+1. Open `sql/02_registry_tables.sql`, replace `${catalog}` and `${schema}`, and run it as the
+   catalog or schema owner. (The command `init-registry` creates the same tables, but the
+   service principals do not have the right to create tables, by design.)
 2. Open `sql/03_registry_grants.sql`, replace the placeholders, and run it.
 
 3. Optional, for jobs that need a hard stop at start: run `sql/04_eligible_releases_view.sql`.
@@ -250,7 +255,9 @@ Only after step 10 passes:
 
 ## Step 12. Block run-time installs (last)
 
-Do this only when the pilot jobs no longer install anything from JFrog at run time:
+This step is for the **pilot compute only**. Blocking run-time installs for everyone else is
+stage 9 of IMPLEMENTATION.md, after the migration report. Do this only when the pilot jobs no
+longer install anything from JFrog at run time:
 
 1. Add network rules so pilot compute cannot reach the JFrog host or the internet package indexes.
 2. Run the last cell of `examples/consumer_check.py`. It must print `index reachable: False`.

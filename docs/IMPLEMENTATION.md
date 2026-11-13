@@ -22,6 +22,18 @@ and the change each outcome needs.
    with `databricks bundle deploy -t <target>`.
 4. A result that matches no row is new information. Stop, record it, and decide before going on.
 
+**Running a one-off command.** Most steps are job runs. A few commands have no job of their own
+(`waiver`, `serverless-init`, `migration-report`, `import-release`, `rollout-start`, `verify`,
+`status`). Run them through one of two jobs, as the right identity:
+
+```bash
+databricks bundle run -t <target> libdist_run_builder  --params 'command=<command and options>'
+databricks bundle run -t <target> libdist_run_promoter --params 'command=<command and options>'
+```
+
+Do not put a comma in the command when you use `--params`. If you need one, open the job in the
+workspace and use **Run now with different parameters**. The result is the JSON at the end of the run's output.
+
 ## Stages at a glance
 
 | Stage | Goal | Automation switched on | Proposal phase |
@@ -118,6 +130,7 @@ add a library version that Security knows is vulnerable to a test channel's `cha
 | What you see | Change | Where |
 |---|---|---|
 | `bundle validate` rejects the `&pipeline_cluster` / `*pipeline_cluster` YAML anchor | Copy the `new_cluster` block into every job | `resources/jobs.yml` |
+| `bundle validate` or `deploy` refuses `run_as` in a `mode: development` target | Give the non-production target `mode: production` and a `root_path`, as the `prod` target has. Note that development mode also adds a name prefix and pauses schedules. | `databricks.yml` |
 | `bundle validate` rejects `run_as` inside a job | Move to one `run_as` per target and deploy two bundles, one per service principal, or run all jobs as one identity during the pilot | `databricks.yml`, `resources/jobs.yml` |
 | The task fails with `No module named 'libdist'` | `__file__` is not set for the task. Pass the source folder explicitly | `src/run.py`: replace the `HERE` line with `HERE = os.path.join(os.path.dirname(<config dir argument>), "src")`, taking the path that follows `--config-dir` in `sys.argv` |
 | The cluster does not start for the service principal | Grant cluster creation, or add `policy_id` to the cluster block | `resources/jobs.yml` |
@@ -183,9 +196,10 @@ policy at the copy's `install.txt` and start a cluster. The library install must
 1. Security confirms `grace_hours` in `config/policy.yml` and sets `grace_values_approved: true`.
    The rule: each value must be longer than the time it takes to get a replacement release.
 2. Unpause `libdist-reassess`. Create the alerts from `sql/monitoring_queries.sql`.
-3. Exercise it: build and publish a release that contains a version with a *Low* finding, switch
-   the pilot policy to it, then add `Low` to `block_severities` and run `libdist-reassess`.
-   Afterwards remove `Low` again.
+3. Exercise it in a test channel: build and publish a release that contains a version with a
+   *Low* or *Medium* finding, and switch a test policy to it. Then add that severity to
+   `block_severities`, give it a value in `grace_hours`, redeploy, and run `libdist-reassess`.
+   Afterwards put `policy.yml` back and close the test exception.
 
 **Check:** `dependency_exceptions` has one `GRACE` row with a deadline, alert A2 fires, and a
 `libdist-build` run was started with `upgrade_package` set.
@@ -194,7 +208,7 @@ policy at the copy's `install.txt` and start a cluster. The library install must
 
 | What you see | Change | Where |
 |---|---|---|
-| The replacement build is not started | The builder may not run the build job. Grant it `CAN_MANAGE_RUN` on `libdist-build` | job permissions in the workspace, or `permissions:` in `resources/jobs.yml` |
+| The replacement build is not started | The bundle grants the builder `CAN_MANAGE_RUN` on `libdist-build`. Check on the job's Permissions page that the grant was applied | `permissions:` of `libdist_build` in `resources/jobs.yml` |
 | `run_now` rejects `job_parameters` | Your workspace uses the older parameter style | `cmd_reassess` in `src/libdist/cli.py`: pass `python_params` instead |
 | A rescan takes longer than 4 hours | Raise `scan_threads`, or lengthen the schedule | `config/settings.yml`; `resources/jobs.yml` |
 | The same finding opens a second grace period | The finding's ID is not stable between scans. Use the CVE as the key | `_row_to_finding` in `src/libdist/scan.py`: prefer `cves[0]` over `issueId` |
@@ -263,7 +277,7 @@ library is broken on purpose in a test channel, and confirm the rollout ends `RO
 1. Confirm with Security how waiver requests from the pipeline are approved (decision D10) and
    that the Curation policy allows them.
 2. Request one by hand:
-   `python src/run.py --config-dir config waiver --package <p> --version <blocked version> --reason "POC test P12"`.
+   `databricks bundle run -t prod libdist_run_builder --params 'command=waiver --package <p> --version <blocked version> --reason "POC test P12"'`.
 3. After it is approved, run `libdist-build` with `upgrade_package=<p>` and confirm the version is used.
 4. Set `waiver_mode: request` in `config/policy.yml`.
 
@@ -290,8 +304,8 @@ successfully once the waiver is approved. No second request is made for the same
 1. Publish a release for a channel whose `runtime_profile` is a serverless environment version.
    Build it on a cluster whose Python version matches that environment.
 2. Create the base environment for the canary wave:
-   `python src/run.py --config-dir config serverless-init --release-id <id> --wave canary`
-   (as the promoter). It writes `<wheelhouse>/environments/<channel>-<wave>.yml` and registers it.
+   `databricks bundle run -t prod libdist_run_promoter --params 'command=serverless-init --release-id <id> --wave canary'`.
+   The channel name and wave name may contain only lower-case letters, digits and hyphens. It writes `<wheelhouse>/environments/<channel>-<wave>.yml` and registers it.
 3. Add the printed name to `base_environments` of that wave in `channel.yml` and redeploy.
 4. Attach a serverless notebook to the base environment and run the first cell of
    `examples/consumer_check.py`.
@@ -319,7 +333,7 @@ successfully once the waiver is approved. No second request is made for the same
 1. Run `libdist-discover`, with `notebook_root` set if you want `%pip` lines included. Give the
    builder read access to the jobs, clusters and folders it should see.
 2. Run the migration report and read dashboard queries D8 and D9:
-   `python src/run.py --config-dir config migration-report --channel <channel>`.
+   `databricks bundle run -t prod libdist_run_builder --params 'command=migration-report --channel <channel>'`.
 3. Fix what it lists: add missing libraries to `channel.in`; ask owners to remove pins that conflict.
 4. **P11:** set `pip_redirect: true` for a test channel, switch a test policy, and run a notebook
    with existing `%pip install` lines on it.
@@ -362,7 +376,7 @@ additional workspace:
 
 *Another metastore or region.* Copy published release folders to storage both sides can read
 (for example an external volume), then on the receiving side run
-`python src/run.py --config-dir config import-release --source-path <path>`. The receiving side
+`databricks bundle run -t prod libdist_run_promoter --params 'command=import-release --source-path <path>'`. The receiving side
 needs the channel configured with the same `runtime_profile`, and its own `libdist-reassess`.
 
 *Clean-up.* Run `libdist-cleanup` and read its report. When the list is right, run it with

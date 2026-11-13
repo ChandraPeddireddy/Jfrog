@@ -4,6 +4,9 @@ For each new blocking finding this job:
   1. records the finding,
   2. opens a GRACE exception with a deadline taken from policy.yml.
 
+A finding that was already recorded but has become blocking (Xray raised its
+severity, or policy.yml was tightened) gets a grace period in the same way.
+
 Then, for every release in use that has an active grace period and no
 replacement on the way, it starts a replacement build that upgrades only the
 affected packages. It tries again on every run, so a build that failed because
@@ -21,7 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import registry as reg
-from .build import _finding_row
+from .build import _accepted_issues, _finding_row
 from .promote import _as_datetime, revoke
 from .scan import SCANNED
 from .settings import Config
@@ -51,16 +54,19 @@ def reassess(cfg: Config, registry: reg.Registry, scanner, now: datetime | None 
             continue
 
         known = {(f.get("filename") or "", f["issue_id"]) for f in registry.list_findings(release_id)}
+        # Issues that already have an exception on this release, or that Security accepted for the channel.
         open_issues = {e["issue_id"] for e in registry.list_exceptions(release_id=release_id)}
+        open_issues |= _accepted_issues(registry, row["channel"])
         new_rows, affected = [], set()
         candidates = [(s.package, s.version, s.filename, f) for s in scans for f in s.findings]
         candidates += [(f.component, f.component_version, "", f) for f in violations]
         for package, version, filename, finding in candidates:
-            if (filename, finding.issue_id) in known:
-                continue
-            known.add((filename, finding.issue_id))
-            new_rows.append(_finding_row(release_id, package, version, filename, finding,
-                                         policy.severity_source, "reassess"))
+            if (filename, finding.issue_id) not in known:
+                known.add((filename, finding.issue_id))
+                new_rows.append(_finding_row(release_id, package, version, filename, finding,
+                                             policy.severity_source, "reassess"))
+            # Not only new findings: one that became blocking (Xray raised its severity, or
+            # policy.yml was tightened) also needs a grace period.
             blocking = finding.is_violation or finding.severity == "Unknown" or policy.blocks(finding.severity)
             if not blocking or finding.issue_id in open_issues:
                 continue

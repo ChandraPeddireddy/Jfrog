@@ -271,6 +271,9 @@ class SparkRegistry(Registry):
     def __init__(self, spark, catalog: str, schema: str):
         self.spark = spark
         self.catalog, self.schema = catalog, schema
+        # All pipeline times are UTC. Without this, timestamps read back from Delta
+        # would be interpreted in the cluster's session time zone.
+        spark.conf.set("spark.sql.session.timeZone", "UTC")
         try:
             self.actor = spark.sql("SELECT current_user() AS u").collect()[0]["u"]
         except Exception:

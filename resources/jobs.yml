@@ -13,6 +13,10 @@ resources:
       run_as:
         service_principal_name: ${var.builder_sp}
       max_concurrent_runs: 1
+      permissions:
+        # libdist-reassess (run by the builder) starts replacement builds with this job
+        - level: CAN_MANAGE_RUN
+          service_principal_name: ${var.builder_sp}
       parameters:
         - name: channel
           default: ds-basics
@@ -274,3 +278,59 @@ resources:
               - cleanup
               - --apply
               - "{{job.parameters.apply}}"
+
+    # ---- One-off commands -------------------------------------------------------------
+    # Run any command of src/run.py as the builder or as the promoter, for example:
+    #   databricks bundle run -t prod libdist_run_promoter --params 'command=status --channel ds-basics'
+    # Do not put a comma in the command when you use --params; use the job UI
+    # ("Run now with different parameters") for those.
+
+    libdist_run_builder:
+      name: libdist-run-builder
+      description: >-
+        Run one pipeline command as the builder: waiver, migration-report, build --full-upgrade,
+        status, verify, init-registry.
+      run_as:
+        service_principal_name: ${var.builder_sp}
+      parameters:
+        - name: command
+          default: status
+      job_clusters:
+        - job_cluster_key: pipeline
+          new_cluster: *pipeline_cluster
+      tasks:
+        - task_key: run
+          job_cluster_key: pipeline
+          timeout_seconds: 7200
+          spark_python_task:
+            python_file: ../src/run.py
+            parameters:
+              - --config-dir
+              - ${workspace.file_path}/${var.config_dir}
+              - --command-line
+              - "{{job.parameters.command}}"
+
+    libdist_run_promoter:
+      name: libdist-run-promoter
+      description: >-
+        Run one pipeline command as the promoter: serverless-init, rollout-start, import-release,
+        status, verify.
+      run_as:
+        service_principal_name: ${var.promoter_sp}
+      parameters:
+        - name: command
+          default: status
+      job_clusters:
+        - job_cluster_key: pipeline
+          new_cluster: *pipeline_cluster
+      tasks:
+        - task_key: run
+          job_cluster_key: pipeline
+          timeout_seconds: 7200
+          spark_python_task:
+            python_file: ../src/run.py
+            parameters:
+              - --config-dir
+              - ${workspace.file_path}/${var.config_dir}
+              - --command-line
+              - "{{job.parameters.command}}"

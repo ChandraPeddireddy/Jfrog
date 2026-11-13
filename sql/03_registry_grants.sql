@@ -17,7 +17,7 @@ GRANT SELECT, MODIFY ON TABLE ${catalog}.${schema}.dependency_references TO `${p
 GRANT SELECT, MODIFY ON TABLE ${catalog}.${schema}.dependency_events     TO `${promoter_sp}`;
 GRANT SELECT, MODIFY ON TABLE ${catalog}.${schema}.dependency_rollouts   TO `${promoter_sp}`;
 GRANT SELECT, MODIFY ON TABLE ${catalog}.${schema}.dependency_exceptions TO `${promoter_sp}`;
-GRANT SELECT         ON TABLE ${catalog}.${schema}.dependency_artifacts  TO `${promoter_sp}`;
+GRANT SELECT, MODIFY ON TABLE ${catalog}.${schema}.dependency_artifacts  TO `${promoter_sp}`;  -- import-release
 GRANT SELECT         ON TABLE ${catalog}.${schema}.dependency_findings   TO `${promoter_sp}`;
 
 -- Security approvers: read everything, approve releases, manage exceptions.

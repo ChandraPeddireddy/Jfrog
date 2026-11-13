@@ -11,7 +11,7 @@ Commands below use `-t prod`. Replace it with your target. `<catalog>.<schema>` 
 |---|---|
 | See the current state | Dashboard queries D1 and D2 in `sql/monitoring_queries.sql` |
 | Build a release | `databricks bundle run -t prod libdist_build --params channel=<channel>` |
-| Replace one vulnerable library | `databricks bundle run -t prod libdist_build --params channel=<channel>,upgrade_package=<package>` |
+| Replace one vulnerable library | `databricks bundle run -t prod libdist_build --params channel=<channel>,upgrade_package=<package>` (several packages: use **Run now with different parameters** and separate them with commas) |
 | Approve a release | Security runs `sql/approve_release.sql` |
 | Publish an approved release | `databricks bundle run -t prod libdist_publish --params release_id=<id>` |
 | Give a release to compute | `databricks bundle run -t prod libdist_switch --params release_id=<id>,wave=<wave>` |
@@ -20,7 +20,8 @@ Commands below use `-t prod`. Replace it with your target. `<catalog>.<schema>` 
 | Rescan now | `databricks bundle run -t prod libdist_reassess` |
 | Run the promotion steps now | `databricks bundle run -t prod libdist_promote` |
 | See what clean-up would delete | `databricks bundle run -t prod libdist_cleanup` (add `--params apply=true` to delete) |
-| See rollouts | Dashboard query D7; `python src/run.py --config-dir config status --channel <channel>` |
+| See rollouts | Dashboard query D7; `databricks bundle run -t prod libdist_run_promoter --params 'command=status --channel <channel>'` |
+| Run any other command | `libdist_run_builder` or `libdist_run_promoter` with `--params 'command=<command and options>'` (no commas; otherwise use **Run now with different parameters** in the job UI) |
 
 ## Manual or automatic
 
@@ -83,7 +84,7 @@ clusters pick it up at the next restart. Runs that already started keep the rele
 |---|---|---|
 | Security rebuild | `upgrade_package=<package>` | Only that package, and whatever it forces. Every other version stays. |
 | Add a library | no `upgrade_package`, after editing `channel.in` | Only the new library and its new dependencies. |
-| Routine refresh | Run `src/run.py build --channel <c> --full-upgrade` from a one-off job | Every library moves to its newest allowed version. Use a longer canary. |
+| Routine refresh | `databricks bundle run -t prod libdist_run_builder --params 'command=build --channel <channel> --full-upgrade'` | Every library moves to its newest allowed version. Use a longer canary. |
 
 Never mix a routine refresh into a security rebuild.
 
@@ -113,11 +114,11 @@ Curation or Xray blocked it (`reason` is `curation`, `xray` or `unknown`).
    Request a Curation waiver for that exact fix version, if Security has agreed a waiver path (decision D10):
 
    ```bash
-   python src/run.py --config-dir config waiver --package <package> --version <version> \
-       --reason "Fixes <CVE> in release <release_id>, which is in use" --channel <channel>
+   databricks bundle run -t prod libdist_run_builder --params \
+     'command=waiver --package <package> --version <version> --channel <channel> --reason "Fixes <CVE> in a release that is in use"'
    ```
 
-   Run it from a notebook or a one-off job as the builder. Approval happens in JFrog under
+   Approval happens in JFrog under
    Curation > Waiver Requests. After it is approved, rebuild with `upgrade_package=<package>`.
 2. **Blocked by Xray in every version (no fix exists).** This is outcome C. Tell the channel owner
    and Security. The release in use stays until its grace deadline. Security decides: accept the
@@ -252,7 +253,7 @@ the environment's YAML file under `<wheelhouse>/environments/` and refreshes the
   keep the old one until they are restarted.
 - If the refresh fails, the YAML file is put back and the event `SWITCH_FAILED` is written. Read
   the error in the workspace under Settings > Compute > Base environments.
-- To add a serverless wave: `python src/run.py --config-dir config serverless-init --release-id <id> --wave <wave>`,
+- To add a serverless wave: `databricks bundle run -t prod libdist_run_promoter --params 'command=serverless-init --release-id <id> --wave <wave>'`,
   then add the printed name to the wave in `channel.yml`.
 
 ## Several workspaces
@@ -276,4 +277,4 @@ published releases out to their own compute.
 | Which release does a policy or base environment use? | `dependency_references`; the policy's Libraries tab; the YAML under `<wheelhouse>/environments/` |
 | Where is a rollout? | `dependency_rollouts`; events `ROLLOUT_*` |
 | Who read or wrote the wheelhouse? | Unity Catalog audit logs for the volume |
-| Is a release intact? | `python src/run.py --config-dir config verify --release-id <id>` |
+| Is a release intact? | `databricks bundle run -t prod libdist_run_promoter --params 'command=verify --release-id <id>'` |

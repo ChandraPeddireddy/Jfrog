@@ -488,3 +488,39 @@ def test_copy_tree_copies_contents_only(tmp_path):
     (tmp_path / "a" / "lock").write_text("l")
     copy_tree(tmp_path / "a", tmp_path / "b")
     assert (tmp_path / "b" / "wheels" / "x.whl").read_bytes() == b"1" and (tmp_path / "b" / "lock").read_text() == "l"
+
+
+# ---- findings that become blocking later -----------------------------------
+def test_a_known_finding_that_becomes_blocking_gets_a_grace_period(cfg, registry, policies):
+    """Security tightens policy.yml (or Xray raises a severity) after the release was published."""
+    scanner = FakeScanner({"beta-1.1-py3-none-any.whl": [Finding("XRAY-5", "Medium")]})
+    _publish(cfg, registry, "demo-20261101-0900", scanner=scanner)
+    switch(cfg, registry, policies, "demo-20261101-0900", "canary")
+    assert reassess(cfg, registry, scanner)["rebuilds"] == {} and registry.list_exceptions() == []
+
+    cfg.policy.block_severities.append("Medium")
+    cfg.policy.grace_hours["Medium"] = 168
+    assert reassess(cfg, registry, scanner)["rebuilds"] == {"demo": ["beta"]}
+    assert [(e["issue_id"], e["kind"]) for e in registry.list_exceptions()] == [("XRAY-5", "GRACE")]
+    assert len(registry.list_findings("demo-20261101-0900")) == 1  # the finding itself is not recorded twice
+
+
+def test_a_finding_security_accepted_does_not_open_a_grace_period(cfg, registry, policies):
+    scanner = FakeScanner({"beta-1.1-py3-none-any.whl": [Finding("XRAY-9", "High")]})
+    registry.add_exception({"channel": "demo", "package": "beta", "issue_id": "XRAY-9", "severity": "High",
+                            "kind": "RISK_ACCEPTED", "status": "APPROVED", "approver": "sec@example.com",
+                            "deadline_at": utcnow() + timedelta(days=30), "rationale": "no fix exists"})
+    _publish(cfg, registry, "demo-20261101-0900", scanner=scanner)
+    switch(cfg, registry, policies, "demo-20261101-0900", "canary")
+    assert reassess(cfg, registry, scanner)["rebuilds"] == {}
+    assert [e["kind"] for e in registry.list_exceptions()] == ["RISK_ACCEPTED"]
+
+
+def test_one_off_command_line_is_expanded():
+    from libdist.cli import expand_command_line
+
+    assert expand_command_line(["--config-dir", "c", "--command-line", 'waiver --package p --reason "fix for CVE"']) == [
+        "--config-dir", "c", "waiver", "--package", "p", "--reason", "fix for CVE"]
+    assert expand_command_line(["status"]) == ["status"]
+    with pytest.raises(SystemExit):
+        expand_command_line(["--command-line", " "])

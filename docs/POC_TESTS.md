@@ -17,7 +17,7 @@ Record the result of every test: the date, the environment, what you ran, and wh
 | P9 | Serverless switch while runs are in flight | IMPLEMENTATION stage 8, step 5: run `libdist-switch` for the serverless wave while a serverless job runs | In-flight runs keep their environment; new runs get the new one. Record the delay. |
 | P10 | Load | Start about 50 job clusters at once on one policy | All install. Record the install time and compare it with today's install time from JFrog. |
 | P11 | Existing `%pip install` lines | Set `pip_redirect: true` in a test channel's `channel.yml`, redeploy, run `libdist-switch` for a test policy, start a cluster on it, and run a notebook with existing `%pip install` lines | Satisfied requirements are a no-op; others fail with "no matching distribution"; no traffic to JFrog |
-| P12 | Curation waiver through the API | `python src/run.py --config-dir config waiver --package <p> --version <blocked version> --reason "POC test P12"` as the builder | A request appears in JFrog under Curation > Waiver Requests. After approval, `libdist-build` can download that version. |
+| P12 | Curation waiver through the API | `databricks bundle run -t prod libdist_run_builder --params 'command=waiver --package <p> --version <blocked version> --reason "POC test P12"'` | A request appears in JFrog under Curation > Waiver Requests. After approval, `libdist-build` can download that version. |
 
 ## Notes
 
